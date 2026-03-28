@@ -14,6 +14,7 @@ export function createListenerSocket({
   onListeners,
   onEnded,
   onError,
+  onPinRequired,
   onReconnecting,
 }) {
   let ws = null;
@@ -51,6 +52,7 @@ export function createListenerSocket({
           streamEnded = true;
           onEnded();
         }
+        if (msg.type === 'pin-required') onPinRequired();
         if (msg.type === 'error') onError(msg.message);
       } catch (err) {
         console.error('Failed to parse server message:', err);
@@ -96,6 +98,12 @@ export function createListenerSocket({
   connect();
 
   return {
+    submitPin(pin) {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'join', sessionId, pin }));
+      }
+    },
+
     close() {
       destroyed = true;
       document.removeEventListener('visibilitychange', onVisibilityChange);

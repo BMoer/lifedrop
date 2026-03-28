@@ -13,6 +13,9 @@ const levelBar = document.getElementById('levelBar');
 const listenerCountEl = document.getElementById('listenerCount');
 const endedSection = document.getElementById('endedSection');
 const visualizerCanvas = document.getElementById('visualizer');
+const pinSection = document.getElementById('pinSection');
+const pinInput = document.getElementById('pinInput');
+const pinSubmitBtn = document.getElementById('pinSubmitBtn');
 
 // --- Session ID ---
 
@@ -135,6 +138,12 @@ function connectSocket() {
       endedSection.classList.add('active');
       isPlaying = false;
     },
+    onPinRequired: () => {
+      statusEl.textContent = 'This stream requires a PIN';
+      statusEl.classList.remove('connected');
+      pinSection.style.display = 'block';
+      playBtn.classList.remove('visible');
+    },
     onError: (message) => {
       statusEl.textContent = message;
       statusEl.classList.add('error');
@@ -154,6 +163,20 @@ playBtn.addEventListener('click', async () => {
   statusEl.textContent = '';
   listeningSection.classList.add('active');
   await startPlayback();
+});
+
+// --- PIN Submit ---
+
+pinSubmitBtn.addEventListener('click', () => {
+  const pin = pinInput.value.trim();
+  if (!pin) return;
+  pinSection.style.display = 'none';
+  statusEl.textContent = 'Joining...';
+  socket.submitPin(pin);
+});
+
+pinInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') pinSubmitBtn.click();
 });
 
 // --- Init ---

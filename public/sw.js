@@ -1,7 +1,8 @@
-const CACHE_NAME = 'livedrop-v1';
+const CACHE_NAME = 'livedrop-v2';
 
 const STATIC_ASSETS = [
   '/',
+  '/broadcast',
   '/listener.html',
   '/js/sender/main.js',
   '/js/sender/audio-capture.js',
@@ -11,7 +12,10 @@ const STATIC_ASSETS = [
   '/js/listener/opus-decoder.js',
   '/js/listener/websocket-listener.js',
   '/js/listener/background-audio.js',
+  '/js/listener/visualizer.js',
+  '/js/lobby/main.js',
   '/js/shared/constants.js',
+  '/js/vendor/qr.js',
   '/js/worklets/sender-worklet.js',
   '/js/worklets/listener-worklet.js',
   '/manifest.json',

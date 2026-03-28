@@ -1,13 +1,14 @@
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { WebSocketServer, WebSocket } = require('ws');
 
 const PORT = process.env.PORT || 3000;
 
 // --- Session state ---
 
-const sessions = new Map(); // sessionId -> { sender, listeners }
+const sessions = new Map(); // sessionId -> { sender, listeners, config, pin, createdAt }
 
 function generateSessionId() {
   const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
@@ -30,6 +31,23 @@ function validateSessionName(name) {
     return { valid: false, error: 'Name already in use' };
   }
   return { valid: true, name: normalized };
+}
+
+function hashPin(pin) {
+  return crypto.createHash('sha256').update(pin.toString()).digest('hex');
+}
+
+function getPublicSessions() {
+  const result = [];
+  for (const [id, session] of sessions) {
+    result.push({
+      id,
+      listeners: session.listeners.size,
+      hasPin: !!session.pin,
+      createdAt: session.createdAt,
+    });
+  }
+  return result;
 }
 
 function broadcastListenerCount(session) {
@@ -78,7 +96,22 @@ const server = http.createServer((req, res) => {
   const pathname = url.pathname;
 
   if (pathname === '/') {
-    serveFile(res, path.join(__dirname, 'public', 'index.html'));
+    serveFile(res, path.join(__dirname, 'public', 'lobby.html'));
+    return;
+  }
+
+  if (pathname === '/broadcast') {
+    serveFile(res, path.join(__dirname, 'public', 'sender.html'));
+    return;
+  }
+
+  if (pathname === '/api/sessions') {
+    const data = JSON.stringify({ sessions: getPublicSessions() });
+    res.writeHead(200, {
+      'Content-Type': 'application/json',
+      'Cache-Control': 'no-store',
+    });
+    res.end(data);
     return;
   }
 
@@ -138,7 +171,13 @@ wss.on('connection', (ws) => {
 
       role = 'sender';
       sessionId = nameResult.name || generateSessionId();
-      sessions.set(sessionId, { sender: ws, listeners: new Set() });
+      const sessionData = {
+        sender: ws,
+        listeners: new Set(),
+        pin: msg.pin ? hashPin(msg.pin) : null,
+        createdAt: Date.now(),
+      };
+      sessions.set(sessionId, sessionData);
       ws.send(JSON.stringify({ type: 'session', sessionId }));
       console.log(`Session ${sessionId} created`);
       return;
@@ -162,6 +201,17 @@ wss.on('connection', (ws) => {
       if (!session) {
         ws.send(JSON.stringify({ type: 'error', message: 'Session not found' }));
         return;
+      }
+      // PIN check
+      if (session.pin) {
+        if (!msg.pin) {
+          ws.send(JSON.stringify({ type: 'pin-required' }));
+          return;
+        }
+        if (hashPin(msg.pin) !== session.pin) {
+          ws.send(JSON.stringify({ type: 'error', message: 'Wrong PIN' }));
+          return;
+        }
       }
       role = 'listener';
       sessionId = msg.sessionId;

@@ -6,6 +6,7 @@ import { generateQR } from '../vendor/qr.js';
 
 const deviceSelect = document.getElementById('deviceSelect');
 const sessionNameInput = document.getElementById('sessionName');
+const sessionPinInput = document.getElementById('sessionPin');
 const goLiveBtn = document.getElementById('goLiveBtn');
 const setupSection = document.getElementById('setupSection');
 const liveSection = document.getElementById('liveSection');
@@ -71,9 +72,11 @@ async function goLive() {
   statusEl.textContent = 'Connecting...';
 
   const sessionName = sessionNameInput.value.trim() || undefined;
+  const pin = sessionPinInput?.value?.trim() || undefined;
 
   socket = createSenderSocket({
     sessionName,
+    pin,
     onSession: (sessionId) => startCapture(sessionId, stream),
     onListeners: (count) => { listenerCountEl.textContent = count; },
     onClose: () => {

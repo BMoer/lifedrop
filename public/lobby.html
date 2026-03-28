@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#0a0a0a">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="manifest" href="/manifest.json">
+  <link rel="apple-touch-icon" href="/icons/icon-192.png">
+  <title>LiveDrop</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0a0a0a;
+      color: #ffffff;
+      font-family: system-ui, -apple-system, sans-serif;
+      display: flex;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 40px 16px;
+    }
+    .container { max-width: 400px; width: 100%; }
+    h1 {
+      font-size: 28px;
+      font-weight: 700;
+      margin-bottom: 8px;
+      letter-spacing: -0.5px;
+    }
+    .subtitle {
+      font-size: 14px;
+      color: #888;
+      margin-bottom: 32px;
+    }
+    .btn {
+      width: 100%;
+      padding: 16px;
+      border: none;
+      border-radius: 12px;
+      font-size: 18px;
+      font-weight: 600;
+      font-family: inherit;
+      cursor: pointer;
+      transition: opacity 0.2s;
+      text-decoration: none;
+      display: block;
+      text-align: center;
+    }
+    .btn:hover { opacity: 0.85; }
+    .btn-broadcast { background: #ff3b30; color: #fff; margin-bottom: 32px; }
+
+    .section-title {
+      font-size: 13px;
+      color: #888;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 16px;
+    }
+
+    .streams-list { list-style: none; }
+    .stream-card {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      background: #1a1a1a;
+      border: 1px solid #333;
+      border-radius: 10px;
+      padding: 14px 16px;
+      margin-bottom: 10px;
+      text-decoration: none;
+      color: inherit;
+      transition: border-color 0.2s;
+    }
+    .stream-card:hover { border-color: #555; }
+
+    .stream-info { flex: 1; }
+    .stream-name {
+      font-size: 16px;
+      font-weight: 600;
+      margin-bottom: 4px;
+    }
+    .stream-meta {
+      font-size: 12px;
+      color: #888;
+    }
+    .stream-meta span { color: #30d158; font-weight: 600; }
+
+    .stream-badge {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .live-dot-sm {
+      width: 8px; height: 8px;
+      background: #ff3b30;
+      border-radius: 50%;
+      animation: pulse 1.5s ease-in-out infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(255, 59, 48, 0.6); }
+      50% { opacity: 0.8; box-shadow: 0 0 0 6px rgba(255, 59, 48, 0); }
+    }
+    .lock-icon { font-size: 14px; margin-left: 8px; }
+
+    .empty-state {
+      text-align: center;
+      padding: 32px 16px;
+      color: #666;
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>LiveDrop</h1>
+    <p class="subtitle">Lo-fi audio live streaming</p>
+
+    <a href="/broadcast" class="btn btn-broadcast">Start Broadcasting</a>
+
+    <div class="section-title">Live Now</div>
+    <ul class="streams-list" id="streamsList">
+      <li class="empty-state" id="emptyState">No active streams</li>
+    </ul>
+  </div>
+
+  <script type="module" src="/js/lobby/main.js"></script>
+  <script>
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch(() => {});
+    }
+  </script>
+</body>
+</html>

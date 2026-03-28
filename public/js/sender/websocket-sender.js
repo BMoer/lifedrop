@@ -6,7 +6,7 @@ import { SAMPLE_RATE } from '../shared/constants.js';
  *
  * Returns an object with { send, close, encoding } and calls lifecycle callbacks.
  */
-export function createSenderSocket({ sessionName, onSession, onListeners, onClose, onError }) {
+export function createSenderSocket({ sessionName, pin, onSession, onListeners, onClose, onError }) {
   const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const ws = new WebSocket(`${protocol}//${location.host}`);
 
@@ -14,6 +14,9 @@ export function createSenderSocket({ sessionName, onSession, onListeners, onClos
     const startMsg = { type: 'start', role: 'sender' };
     if (sessionName) {
       startMsg.sessionName = sessionName;
+    }
+    if (pin) {
+      startMsg.pin = pin;
     }
     ws.send(JSON.stringify(startMsg));
   };
