@@ -148,13 +148,6 @@
     const listenerCount = document.getElementById('listenerCount');
     const endedSection = document.getElementById('endedSection');
 
-    const debugEl = document.getElementById('debug');
-    function dbg(msg) {
-      console.log(msg);
-      debugEl.textContent += msg + '\n';
-      debugEl.scrollTop = debugEl.scrollHeight;
-    }
-
     const sessionId = location.pathname.split('/s/')[1];
     if (!sessionId) {
       statusEl.textContent = 'No session ID in URL.';
@@ -165,32 +158,45 @@
     let audioCtx = null;
     let processorNode = null;
     let sampleRate = 48000;
+    let encoding = 'pcm';
+    let decoder = null;
+    let decoderTimestamp = 0;
+    let isPlaying = false;
+    let streamEnded = false;
 
     // =====================
-    // PCM Audio Buffer
-    // Ring buffer for smooth playback
+    // PCM Ring Buffer
+    // Larger buffer (30s) for stability
     // =====================
 
-    const BUFFER_SECONDS = 10;
-    let pcmBuffer = null;   // Float32Array ring buffer
-    let writePos = 0;       // next write position
-    let readPos = 0;        // next read position
+    const BUFFER_SECONDS = 30;
+    let pcmBuffer = null;
+    let writePos = 0;
+    let readPos = 0;
     let bufferedSamples = 0;
     let playbackStarted = false;
-    const PREBUFFER_SAMPLES = 48000 * 0.3; // 300ms prebuffer
+    const PREBUFFER_SAMPLES = 48000 * 0.8; // 800ms prebuffer for smooth start
 
     function initBuffer() {
-      const size = sampleRate * BUFFER_SECONDS;
-      pcmBuffer = new Float32Array(size);
+      pcmBuffer = new Float32Array(sampleRate * BUFFER_SECONDS);
       writePos = 0;
       readPos = 0;
       bufferedSamples = 0;
+      playbackStarted = false;
     }
 
-    function writeToBuffer(int16Array) {
+    function writeFloat32ToBuffer(float32) {
+      const bufLen = pcmBuffer.length;
+      for (let i = 0; i < float32.length; i++) {
+        pcmBuffer[writePos] = float32[i];
+        writePos = (writePos + 1) % bufLen;
+        bufferedSamples = Math.min(bufferedSamples + 1, bufLen);
+      }
+    }
+
+    function writeInt16ToBuffer(int16Array) {
       const bufLen = pcmBuffer.length;
       for (let i = 0; i < int16Array.length; i++) {
-        // Int16 → Float32
         pcmBuffer[writePos] = int16Array[i] / (int16Array[i] < 0 ? 0x8000 : 0x7FFF);
         writePos = (writePos + 1) % bufLen;
         bufferedSamples = Math.min(bufferedSamples + 1, bufLen);
@@ -198,55 +204,137 @@
     }
 
     // =====================
-    // Audio Playback
-    // ScriptProcessorNode reads from ring buffer
+    // Opus Decoder (WebCodecs)
     // =====================
 
+    function initDecoder() {
+      if (typeof AudioDecoder === 'undefined') {
+        encoding = 'pcm';
+        return;
+      }
+
+      decoder = new AudioDecoder({
+        output: (audioData) => {
+          const float32 = new Float32Array(audioData.numberOfFrames);
+          audioData.copyTo(float32, { planeIndex: 0 });
+          writeFloat32ToBuffer(float32);
+          audioData.close();
+        },
+        error: () => {} // Opus decode errors are recoverable, just skip
+      });
+
+      decoder.configure({
+        codec: 'opus',
+        sampleRate: 48000,
+        numberOfChannels: 1,
+      });
+
+      decoderTimestamp = 0;
+    }
+
+    function decodeOpusChunk(data) {
+      if (!decoder || decoder.state !== 'configured') return;
+      const chunk = new EncodedAudioChunk({
+        type: 'key',
+        timestamp: decoderTimestamp,
+        data: data,
+      });
+      decoder.decode(chunk);
+      decoderTimestamp += 20000;
+    }
+
+    // =====================
+    // Audio Playback
+    // 4096 buffer for smoother output (less chance of underrun)
+    // Gain node for volume normalization
+    // =====================
+
+    let gainNode = null;
+
     function startPlayback() {
+      if (audioCtx) return; // Already playing
+
       audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate });
       audioCtx.resume();
 
       initBuffer();
 
-      // 2048 samples per callback = ~43ms at 48kHz
-      processorNode = audioCtx.createScriptProcessor(2048, 1, 1);
+      if (encoding === 'opus') {
+        initDecoder();
+      }
+
+      setupBackgroundAudio();
+
+      // 4096 = ~85ms buffer — much smoother than 2048
+      processorNode = audioCtx.createScriptProcessor(4096, 1, 1);
+
+      // Gain node for consistent volume
+      gainNode = audioCtx.createGain();
+      gainNode.gain.value = 1.0;
 
       const analyser = audioCtx.createAnalyser();
       analyser.fftSize = 256;
 
+      // Smoothing: track RMS for gentle volume normalization
+      let rmsSmoothed = 0;
+
       processorNode.onaudioprocess = (e) => {
         const output = e.outputBuffer.getChannelData(0);
         const bufLen = pcmBuffer.length;
+        const needed = output.length;
 
-        if (bufferedSamples < output.length) {
-          // Underrun: output silence
-          output.fill(0);
+        if (bufferedSamples < needed) {
+          // Underrun: gentle fade to silence instead of hard cut
+          for (let i = 0; i < needed; i++) {
+            if (bufferedSamples > 0) {
+              output[i] = pcmBuffer[readPos] * (bufferedSamples / needed);
+              readPos = (readPos + 1) % bufLen;
+              bufferedSamples--;
+            } else {
+              output[i] = 0;
+            }
+          }
           return;
         }
 
-        for (let i = 0; i < output.length; i++) {
+        for (let i = 0; i < needed; i++) {
           output[i] = pcmBuffer[readPos];
           readPos = (readPos + 1) % bufLen;
         }
-        bufferedSamples -= output.length;
+        bufferedSamples -= needed;
 
-        // If we're too far behind (>2s buffered), skip ahead
-        if (bufferedSamples > sampleRate * 2) {
-          const skip = bufferedSamples - Math.floor(sampleRate * 0.3);
+        // Soft skip if >3s behind live (gradual, not jarring)
+        if (bufferedSamples > sampleRate * 3) {
+          const skip = bufferedSamples - Math.floor(sampleRate * 0.8);
           readPos = (readPos + skip) % bufLen;
           bufferedSamples -= skip;
-          dbg('skipped ' + (skip / sampleRate).toFixed(1) + 's to stay near live');
+        }
+
+        // Auto-gain: gently normalize volume to prevent fluctuation
+        let rms = 0;
+        for (let i = 0; i < needed; i++) rms += output[i] * output[i];
+        rms = Math.sqrt(rms / needed);
+        rmsSmoothed = rmsSmoothed * 0.95 + rms * 0.05;
+
+        if (rmsSmoothed > 0.001) {
+          const targetRms = 0.15; // comfortable listening level
+          const currentGain = gainNode.gain.value;
+          const desiredGain = Math.min(3.0, Math.max(0.5, targetRms / rmsSmoothed));
+          // Smooth gain changes to avoid clicks
+          gainNode.gain.value = currentGain * 0.97 + desiredGain * 0.03;
         }
       };
 
-      processorNode.connect(analyser);
+      processorNode.connect(gainNode);
+      gainNode.connect(analyser);
       analyser.connect(audioCtx.destination);
 
-      dbg('playback started, sampleRate=' + sampleRate);
+      isPlaying = true;
 
       // Level meter
       const dataArray = new Uint8Array(analyser.frequencyBinCount);
       function updateMeter() {
+        if (!isPlaying) return;
         analyser.getByteFrequencyData(dataArray);
         let sum = 0;
         for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
@@ -258,46 +346,95 @@
     }
 
     // =====================
-    // WebSocket Connection
+    // Background Audio
     // =====================
 
+    function setupBackgroundAudio() {
+      if ('mediaSession' in navigator) {
+        navigator.mediaSession.metadata = new MediaMetadata({
+          title: 'LiveDrop',
+          artist: 'Live Stream',
+        });
+        // Prevent pause/stop from media controls
+        navigator.mediaSession.setActionHandler('pause', () => {});
+        navigator.mediaSession.setActionHandler('stop', () => {});
+      }
+
+      // Silent <audio> loop keeps iOS audio session alive
+      const keepAlive = document.createElement('audio');
+      // 1 second of near-silence WAV (more reliable than ultra-short)
+      keepAlive.src = 'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA=';
+      keepAlive.loop = true;
+      keepAlive.volume = 0.01;
+      keepAlive.play().catch(() => {});
+
+      // Resume on visibility change
+      document.addEventListener('visibilitychange', () => {
+        if (audioCtx && audioCtx.state === 'suspended') {
+          audioCtx.resume();
+        }
+        // Reconnect WebSocket if it died in background
+        if (document.visibilityState === 'visible' && ws && ws.readyState > WebSocket.OPEN) {
+          reconnect();
+        }
+      });
+    }
+
+    // =====================
+    // WebSocket with Auto-Reconnect
+    // =====================
+
+    let reconnectTimer = null;
+    let reconnectAttempts = 0;
+
     function connect() {
+      if (ws && ws.readyState <= WebSocket.OPEN) return;
+
       const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
       ws = new WebSocket(`${protocol}//${location.host}`);
       ws.binaryType = 'arraybuffer';
 
       ws.onopen = () => {
+        reconnectAttempts = 0;
         ws.send(JSON.stringify({ type: 'join', sessionId }));
+        if (isPlaying) {
+          statusEl.textContent = '';
+        }
       };
 
       ws.onmessage = (event) => {
-        // Binary: PCM audio samples (Int16)
         if (event.data instanceof ArrayBuffer) {
-          if (pcmBuffer) {
-            const int16 = new Int16Array(event.data);
-            writeToBuffer(int16);
+          if (!pcmBuffer) return;
 
-            // Start playback after prebuffer
-            if (!playbackStarted && bufferedSamples >= PREBUFFER_SAMPLES) {
-              playbackStarted = true;
-              dbg('prebuffer full, starting playback');
-            }
+          if (encoding === 'opus') {
+            decodeOpusChunk(event.data);
+          } else {
+            writeInt16ToBuffer(new Int16Array(event.data));
+          }
+
+          if (!playbackStarted && bufferedSamples >= PREBUFFER_SAMPLES) {
+            playbackStarted = true;
           }
           return;
         }
 
-        // Text: control message
         const msg = JSON.parse(event.data);
 
         if (msg.type === 'joined') {
-          statusEl.textContent = 'Waiting for audio...';
-          statusEl.classList.add('connected');
-          playBtn.classList.add('visible');
+          if (!isPlaying) {
+            statusEl.textContent = 'Waiting for audio...';
+            statusEl.classList.add('connected');
+            playBtn.classList.add('visible');
+          }
         }
 
         if (msg.type === 'config') {
           sampleRate = msg.sampleRate || 48000;
-          dbg('config: sampleRate=' + sampleRate);
+          encoding = msg.encoding || 'pcm';
+          // Re-init decoder if needed after reconnect
+          if (encoding === 'opus' && isPlaying && (!decoder || decoder.state !== 'configured')) {
+            initDecoder();
+          }
         }
 
         if (msg.type === 'listeners') {
@@ -305,6 +442,7 @@
         }
 
         if (msg.type === 'ended') {
+          streamEnded = true;
           statusEl.textContent = '';
           listeningSection.classList.remove('active');
           playBtn.classList.remove('visible');
@@ -318,11 +456,28 @@
       };
 
       ws.onclose = () => {
-        if (!endedSection.classList.contains('active')) {
-          statusEl.textContent = 'Connection lost.';
-          statusEl.classList.add('error');
-        }
+        if (streamEnded) return;
+        reconnect();
       };
+
+      ws.onerror = () => {};
+    }
+
+    function reconnect() {
+      if (streamEnded) return;
+      if (reconnectTimer) return;
+
+      reconnectAttempts++;
+      const delay = Math.min(1000 * Math.pow(1.5, reconnectAttempts - 1), 10000);
+
+      if (isPlaying) {
+        statusEl.textContent = 'Reconnecting...';
+      }
+
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        connect();
+      }, delay);
     }
 
     // =====================

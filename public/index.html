@@ -238,6 +238,10 @@
       };
     });
 
+    let encoder = null;
+    let encoderTimestamp = 0;
+    const useOpus = typeof AudioEncoder !== 'undefined';
+
     function startCapture(sessionId) {
       const url = `${location.origin}/s/${sessionId}`;
       shareUrl.textContent = url;
@@ -245,31 +249,67 @@
       liveSection.classList.add('active');
       statusEl.textContent = '';
 
-      // Send sample rate so listener knows how to play back
-      ws.send(JSON.stringify({ type: 'config', sampleRate: 48000 }));
+      const encoding = useOpus ? 'opus' : 'pcm';
+      ws.send(JSON.stringify({ type: 'config', sampleRate: 48000, encoding }));
 
-      // Raw PCM capture via ScriptProcessorNode
       audioCtx = new AudioContext({ sampleRate: 48000 });
       const source = audioCtx.createMediaStreamSource(stream);
 
-      // 4096 samples per buffer = ~85ms at 48kHz
-      processorNode = audioCtx.createScriptProcessor(4096, 1, 1);
+      if (useOpus) {
+        // Opus encoding via WebCodecs — ~16KB/s instead of ~94KB/s
+        encoder = new AudioEncoder({
+          output: (chunk) => {
+            const buf = new ArrayBuffer(chunk.byteLength);
+            chunk.copyTo(buf);
+            if (ws && ws.readyState === WebSocket.OPEN) {
+              ws.send(buf);
+            }
+          },
+          error: (err) => console.error('AudioEncoder error:', err)
+        });
+
+        encoder.configure({
+          codec: 'opus',
+          sampleRate: 48000,
+          numberOfChannels: 1,
+          bitrate: 128000,
+        });
+
+        encoderTimestamp = 0;
+      }
+
+      // 2048 samples = ~43ms at 48kHz — low latency
+      processorNode = audioCtx.createScriptProcessor(2048, 1, 1);
 
       processorNode.onaudioprocess = (e) => {
         if (!ws || ws.readyState !== WebSocket.OPEN) return;
-
         const float32 = e.inputBuffer.getChannelData(0);
-        // Convert Float32 → Int16 for bandwidth savings (~50%)
-        const int16 = new Int16Array(float32.length);
-        for (let i = 0; i < float32.length; i++) {
-          const s = Math.max(-1, Math.min(1, float32[i]));
-          int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+
+        if (useOpus && encoder && encoder.state === 'configured') {
+          const audioData = new AudioData({
+            format: 'f32-planar',
+            sampleRate: 48000,
+            numberOfFrames: float32.length,
+            numberOfChannels: 1,
+            timestamp: encoderTimestamp,
+            data: float32,
+          });
+          encoder.encode(audioData);
+          audioData.close();
+          encoderTimestamp += (float32.length / 48000) * 1_000_000;
+        } else {
+          // Fallback: raw Int16 PCM
+          const int16 = new Int16Array(float32.length);
+          for (let i = 0; i < float32.length; i++) {
+            const s = Math.max(-1, Math.min(1, float32[i]));
+            int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+          }
+          ws.send(int16.buffer);
         }
-        ws.send(int16.buffer);
       };
 
       source.connect(processorNode);
-      processorNode.connect(audioCtx.destination); // Required for processing
+      processorNode.connect(audioCtx.destination);
     }
 
     // --- Copy link ---
@@ -300,6 +340,10 @@
     });
 
     function stopStream() {
+      if (encoder) {
+        encoder.close();
+        encoder = null;
+      }
       if (processorNode) {
         processorNode.disconnect();
         processorNode = null;
