@@ -57,9 +57,17 @@ async function goLive() {
 
   let stream;
   try {
-    const constraints = deviceId
-      ? { audio: { deviceId: { exact: deviceId } } }
-      : { audio: true };
+    const audioConstraints = {
+      channelCount: { ideal: 2 },
+      sampleRate: { ideal: 48000 },
+      echoCancellation: false,
+      noiseSuppression: false,
+      autoGainControl: false,
+    };
+    if (deviceId) {
+      audioConstraints.deviceId = { exact: deviceId };
+    }
+    const constraints = { audio: audioConstraints };
     stream = await navigator.mediaDevices.getUserMedia(constraints);
   } catch (err) {
     statusEl.textContent = `Microphone access denied: ${err.message}`;
@@ -110,7 +118,7 @@ async function startCapture(sessionId, stream) {
       onPcmChunk: (buf) => socket.sendAudio(buf),
     });
 
-    socket.sendConfig(capture.encoding);
+    socket.sendConfig(capture.encoding, capture.channels);
   } catch (err) {
     statusEl.textContent = `Audio capture failed: ${err.message}`;
     stopStream();

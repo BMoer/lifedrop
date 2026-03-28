@@ -86,8 +86,8 @@ async function startPlayback() {
 
     // Setup Opus decoder if needed
     if (encoding === 'opus') {
-      decoder = createOpusDecoder((float32) => {
-        playback.feedAudio(float32);
+      decoder = createOpusDecoder((float32, channels) => {
+        playback.feedAudio(float32, channels);
       });
     }
 
@@ -122,8 +122,8 @@ function connectSocket() {
 
       // Re-init decoder on reconnect if needed
       if (encoding === 'opus' && isPlaying && (!decoder || !decoder.isConfigured)) {
-        decoder = createOpusDecoder((float32) => {
-          playback.feedAudio(float32);
+        decoder = createOpusDecoder((float32, channels) => {
+          playback.feedAudio(float32, channels);
         });
       }
     },

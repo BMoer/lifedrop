@@ -1,7 +1,7 @@
 // Audio configuration constants
 export const SAMPLE_RATE = 48000;
-export const OPUS_BITRATE = 192000;
-export const CHANNELS = 1;
+export const OPUS_BITRATE = 510000; // Max Opus: 510kbps stereo, 256kbps mono
+export const CHANNELS = 2; // Stereo for max quality
 
 // Sender capture
 export const CAPTURE_BUFFER_SIZE = 2048; // ~43ms at 48kHz

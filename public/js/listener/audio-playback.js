@@ -1,5 +1,6 @@
 import {
   SAMPLE_RATE,
+  CHANNELS,
   RING_BUFFER_SECONDS,
   PREBUFFER_SAMPLES,
   SKIP_THRESHOLD_SECONDS,
@@ -28,9 +29,13 @@ export async function createAudioPlayback({ onPlaybackStarted, onLevel }) {
   await audioCtx.audioWorklet.addModule('/js/worklets/listener-worklet.js');
 
   const workletNode = new AudioWorkletNode(audioCtx, 'listener-processor', {
+    numberOfInputs: 0,
+    numberOfOutputs: 1,
+    outputChannelCount: [CHANNELS],
     processorOptions: {
       bufferSeconds: RING_BUFFER_SECONDS,
       sampleRate: SAMPLE_RATE,
+      channels: CHANNELS,
       prebufferSamples: PREBUFFER_SAMPLES,
       skipThresholdSeconds: SKIP_THRESHOLD_SECONDS,
       skipTargetSeconds: SKIP_TARGET_SECONDS,
@@ -79,8 +84,12 @@ export async function createAudioPlayback({ onPlaybackStarted, onLevel }) {
     audioCtx,
     analyser,
 
-    feedAudio(float32) {
-      workletNode.port.postMessage({ type: 'audio', samples: float32 });
+    feedAudio(float32, channels) {
+      workletNode.port.postMessage({
+        type: 'audio',
+        samples: float32,
+        channels: channels || CHANNELS,
+      });
     },
 
     reset() {

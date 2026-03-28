@@ -3,6 +3,7 @@ import { SAMPLE_RATE, OPUS_BITRATE, CHANNELS, CAPTURE_BUFFER_SIZE } from '../sha
 /**
  * Creates an audio capture pipeline using AudioWorklet for mic/line-in capture
  * and WebCodecs AudioEncoder for Opus encoding.
+ * Supports mono and stereo based on CHANNELS constant.
  *
  * Returns a cleanup function to stop capture.
  */
@@ -38,43 +39,61 @@ export async function createAudioCapture({ stream, onEncodedChunk, onPcmChunk })
   await audioCtx.audioWorklet.addModule('/js/worklets/sender-worklet.js');
 
   const workletNode = new AudioWorkletNode(audioCtx, 'sender-processor', {
-    processorOptions: { chunkSize: CAPTURE_BUFFER_SIZE },
+    numberOfInputs: 1,
+    numberOfOutputs: 1,
+    outputChannelCount: [CHANNELS],
+    processorOptions: {
+      chunkSize: CAPTURE_BUFFER_SIZE,
+      channels: CHANNELS,
+    },
   });
 
   workletNode.port.onmessage = (event) => {
     if (event.data.type !== 'audio') return;
-    const float32 = event.data.samples;
+    const { channelData, channels } = event.data;
 
     if (encoder && encoder.state === 'configured') {
+      // Create planar AudioData from channel buffers
+      const framesPerChannel = channelData[0].length;
+      const planarData = new Float32Array(framesPerChannel * channels);
+
+      // f32-planar format: all samples of ch0, then all samples of ch1, etc.
+      for (let ch = 0; ch < channels; ch++) {
+        planarData.set(channelData[ch], ch * framesPerChannel);
+      }
+
       const audioData = new AudioData({
         format: 'f32-planar',
         sampleRate: SAMPLE_RATE,
-        numberOfFrames: float32.length,
-        numberOfChannels: CHANNELS,
+        numberOfFrames: framesPerChannel,
+        numberOfChannels: channels,
         timestamp: encoderTimestamp,
-        data: float32,
+        data: planarData,
       });
       encoder.encode(audioData);
       audioData.close();
-      encoderTimestamp += (float32.length / SAMPLE_RATE) * 1_000_000;
+      encoderTimestamp += (framesPerChannel / SAMPLE_RATE) * 1_000_000;
     } else {
-      // Fallback: raw Int16 PCM
-      const int16 = new Int16Array(float32.length);
-      for (let i = 0; i < float32.length; i++) {
-        const s = Math.max(-1, Math.min(1, float32[i]));
-        int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+      // Fallback: raw Int16 PCM (interleaved for stereo)
+      const framesPerChannel = channelData[0].length;
+      const int16 = new Int16Array(framesPerChannel * channels);
+
+      for (let i = 0; i < framesPerChannel; i++) {
+        for (let ch = 0; ch < channels; ch++) {
+          const s = Math.max(-1, Math.min(1, channelData[ch][i]));
+          int16[i * channels + ch] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+        }
       }
       onPcmChunk(int16.buffer);
     }
   };
 
   source.connect(workletNode);
-  // Connect to destination to keep the graph alive (output is silence from worklet)
   workletNode.connect(audioCtx.destination);
 
-  // Return encoding type and cleanup function
   return {
     encoding,
+    channels: CHANNELS,
     destroy() {
       if (encoder) {
         try { encoder.close(); } catch { /* already closed */ }

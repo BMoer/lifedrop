@@ -45,12 +45,13 @@ export function createSenderSocket({ sessionName, pin, onSession, onListeners, o
   ws.onerror = () => onError('Connection error');
 
   return {
-    sendConfig(encoding) {
+    sendConfig(encoding, channels) {
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({
           type: 'config',
           sampleRate: SAMPLE_RATE,
           encoding,
+          channels: channels || 2,
         }));
       }
     },

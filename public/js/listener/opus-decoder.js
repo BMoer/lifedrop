@@ -16,9 +16,30 @@ export function createOpusDecoder(onDecoded) {
 
   const decoder = new AudioDecoder({
     output: (audioData) => {
-      const float32 = new Float32Array(audioData.numberOfFrames);
-      audioData.copyTo(float32, { planeIndex: 0 });
-      onDecoded(float32);
+      const numFrames = audioData.numberOfFrames;
+      const numChannels = audioData.numberOfChannels;
+
+      // Interleave channels: [L0, R0, L1, R1, ...]
+      const interleaved = new Float32Array(numFrames * numChannels);
+
+      if (numChannels === 1) {
+        audioData.copyTo(interleaved, { planeIndex: 0 });
+      } else {
+        // Copy each plane separately then interleave
+        const planes = [];
+        for (let ch = 0; ch < numChannels; ch++) {
+          const plane = new Float32Array(numFrames);
+          audioData.copyTo(plane, { planeIndex: ch });
+          planes.push(plane);
+        }
+        for (let i = 0; i < numFrames; i++) {
+          for (let ch = 0; ch < numChannels; ch++) {
+            interleaved[i * numChannels + ch] = planes[ch][i];
+          }
+        }
+      }
+
+      onDecoded(interleaved, numChannels);
       audioData.close();
     },
     error: () => {
