@@ -215,13 +215,21 @@ wss.on('connection', (ws) => {
       }
       role = 'listener';
       sessionId = msg.sessionId;
+      ws._supportsOpus = !!(msg.capabilities && msg.capabilities.opus);
       session.listeners.add(ws);
       ws.send(JSON.stringify({ type: 'joined', sessionId }));
       if (session.config) {
         ws.send(session.config);
       }
       broadcastListenerCount(session);
-      console.log(`Listener joined ${sessionId} (${session.listeners.size} total)`);
+
+      // If any listener lacks Opus support, tell sender to use PCM
+      if (!ws._supportsOpus && session.sender && session.sender.readyState === WebSocket.OPEN) {
+        session.sender.send(JSON.stringify({ type: 'encoding-request', encoding: 'pcm' }));
+        console.log(`Listener without Opus joined ${sessionId} — requesting PCM from sender`);
+      }
+
+      console.log(`Listener joined ${sessionId} (${session.listeners.size} total, opus=${ws._supportsOpus})`);
       return;
     }
   });

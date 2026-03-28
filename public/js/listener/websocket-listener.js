@@ -33,7 +33,13 @@ export function createListenerSocket({
 
     ws.onopen = () => {
       reconnectAttempts = 0;
-      ws.send(JSON.stringify({ type: 'join', sessionId }));
+      ws.send(JSON.stringify({
+        type: 'join',
+        sessionId,
+        capabilities: {
+          opus: typeof AudioDecoder !== 'undefined',
+        },
+      }));
     };
 
     ws.onmessage = (event) => {
@@ -100,7 +106,14 @@ export function createListenerSocket({
   return {
     submitPin(pin) {
       if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'join', sessionId, pin }));
+        ws.send(JSON.stringify({
+          type: 'join',
+          sessionId,
+          pin,
+          capabilities: {
+            opus: typeof AudioDecoder !== 'undefined',
+          },
+        }));
       }
     },
 

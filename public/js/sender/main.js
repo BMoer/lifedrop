@@ -87,6 +87,15 @@ async function goLive() {
     pin,
     onSession: (sessionId) => startCapture(sessionId, stream),
     onListeners: (count) => { listenerCountEl.textContent = count; },
+    onEncodingRequest: (requestedEncoding) => {
+      // A listener without Opus support joined — switch to PCM
+      if (requestedEncoding === 'pcm' && capture) {
+        capture.switchToPcm();
+        socket.sendConfig('pcm', capture.channels);
+        statusEl.textContent = 'Switched to PCM (listener compatibility)';
+        setTimeout(() => { statusEl.textContent = ''; }, 3000);
+      }
+    },
     onClose: () => {
       stopStream();
       statusEl.textContent = 'Connection lost.';
