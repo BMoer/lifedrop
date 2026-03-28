@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>LiveDrop</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: #0a0a0a;
+      color: #ffffff;
+      font-family: system-ui, -apple-system, sans-serif;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      padding: 40px 16px;
+    }
+    .container {
+      max-width: 400px;
+      width: 100%;
+      text-align: center;
+    }
+    h1 {
+      font-size: 28px;
+      font-weight: 700;
+      margin-bottom: 8px;
+      letter-spacing: -0.5px;
+    }
+    .status {
+      font-size: 14px;
+      color: #888;
+      margin-bottom: 32px;
+      min-height: 20px;
+    }
+    .status.error { color: #ff3b30; }
+    .status.connected { color: #30d158; }
+
+    .btn-play {
+      width: 100%;
+      padding: 20px;
+      background: #30d158;
+      color: #fff;
+      border: none;
+      border-radius: 14px;
+      font-size: 20px;
+      font-weight: 700;
+      font-family: inherit;
+      cursor: pointer;
+      transition: opacity 0.2s;
+      display: none;
+    }
+    .btn-play:hover { opacity: 0.85; }
+    .btn-play.visible { display: block; }
+
+    .listening-section {
+      display: none;
+      margin-top: 16px;
+    }
+    .listening-section.active { display: block; }
+
+    .live-badge {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      margin-bottom: 24px;
+    }
+    .live-dot {
+      width: 12px; height: 12px;
+      background: #ff3b30;
+      border-radius: 50%;
+      animation: pulse 1.5s ease-in-out infinite;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; box-shadow: 0 0 0 0 rgba(255, 59, 48, 0.6); }
+      50% { opacity: 0.8; box-shadow: 0 0 0 8px rgba(255, 59, 48, 0); }
+    }
+    .live-text {
+      font-size: 14px;
+      font-weight: 700;
+      color: #ff3b30;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+    }
+
+    .level-meter {
+      width: 100%;
+      height: 6px;
+      background: #1a1a1a;
+      border-radius: 3px;
+      overflow: hidden;
+      margin-bottom: 24px;
+    }
+    .level-bar {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #30d158, #30d158);
+      border-radius: 3px;
+      transition: width 0.08s linear;
+    }
+
+    .listener-count {
+      font-size: 14px;
+      color: #888;
+    }
+    .listener-count span { color: #30d158; font-weight: 600; }
+
+    .ended {
+      display: none;
+      margin-top: 32px;
+      font-size: 16px;
+      color: #888;
+    }
+    .ended.active { display: block; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>LiveDrop</h1>
+    <div class="status" id="status">Connecting...</div>
+
+    <button class="btn-play" id="playBtn">Play</button>
+
+    <div class="listening-section" id="listeningSection">
+      <div class="live-badge">
+        <div class="live-dot"></div>
+        <span class="live-text">Listening</span>
+      </div>
+      <div class="level-meter">
+        <div class="level-bar" id="levelBar"></div>
+      </div>
+      <div class="listener-count">
+        <span id="listenerCount">0</span> listeners
+      </div>
+    </div>
+
+    <div class="ended" id="endedSection">Stream ended.</div>
+
+    <!-- <div id="debug" style="margin-top:32px;padding:12px;background:#111;border:1px solid #333;border-radius:8px;font-size:11px;color:#888;max-height:200px;overflow-y:auto;white-space:pre-wrap;font-family:monospace;"></div> -->
+  </div>
+
+  <script>
+    const statusEl = document.getElementById('status');
+    const playBtn = document.getElementById('playBtn');
+    const listeningSection = document.getElementById('listeningSection');
+    const levelBar = document.getElementById('levelBar');
+    const listenerCount = document.getElementById('listenerCount');
+    const endedSection = document.getElementById('endedSection');
+
+    const debugEl = document.getElementById('debug');
+    function dbg(msg) {
+      console.log(msg);
+      debugEl.textContent += msg + '\n';
+      debugEl.scrollTop = debugEl.scrollHeight;
+    }
+
+    const sessionId = location.pathname.split('/s/')[1];
+    if (!sessionId) {
+      statusEl.textContent = 'No session ID in URL.';
+      statusEl.classList.add('error');
+    }
+
+    let ws = null;
+    let audioCtx = null;
+    let processorNode = null;
+    let sampleRate = 48000;
+
+    // =====================
+    // PCM Audio Buffer
+    // Ring buffer for smooth playback
+    // =====================
+
+    const BUFFER_SECONDS = 10;
+    let pcmBuffer = null;   // Float32Array ring buffer
+    let writePos = 0;       // next write position
+    let readPos = 0;        // next read position
+    let bufferedSamples = 0;
+    let playbackStarted = false;
+    const PREBUFFER_SAMPLES = 48000 * 0.3; // 300ms prebuffer
+
+    function initBuffer() {
+      const size = sampleRate * BUFFER_SECONDS;
+      pcmBuffer = new Float32Array(size);
+      writePos = 0;
+      readPos = 0;
+      bufferedSamples = 0;
+    }
+
+    function writeToBuffer(int16Array) {
+      const bufLen = pcmBuffer.length;
+      for (let i = 0; i < int16Array.length; i++) {
+        // Int16 → Float32
+        pcmBuffer[writePos] = int16Array[i] / (int16Array[i] < 0 ? 0x8000 : 0x7FFF);
+        writePos = (writePos + 1) % bufLen;
+        bufferedSamples = Math.min(bufferedSamples + 1, bufLen);
+      }
+    }
+
+    // =====================
+    // Audio Playback
+    // ScriptProcessorNode reads from ring buffer
+    // =====================
+
+    function startPlayback() {
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate });
+      audioCtx.resume();
+
+      initBuffer();
+
+      // 2048 samples per callback = ~43ms at 48kHz
+      processorNode = audioCtx.createScriptProcessor(2048, 1, 1);
+
+      const analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 256;
+
+      processorNode.onaudioprocess = (e) => {
+        const output = e.outputBuffer.getChannelData(0);
+        const bufLen = pcmBuffer.length;
+
+        if (bufferedSamples < output.length) {
+          // Underrun: output silence
+          output.fill(0);
+          return;
+        }
+
+        for (let i = 0; i < output.length; i++) {
+          output[i] = pcmBuffer[readPos];
+          readPos = (readPos + 1) % bufLen;
+        }
+        bufferedSamples -= output.length;
+
+        // If we're too far behind (>2s buffered), skip ahead
+        if (bufferedSamples > sampleRate * 2) {
+          const skip = bufferedSamples - Math.floor(sampleRate * 0.3);
+          readPos = (readPos + skip) % bufLen;
+          bufferedSamples -= skip;
+          dbg('skipped ' + (skip / sampleRate).toFixed(1) + 's to stay near live');
+        }
+      };
+
+      processorNode.connect(analyser);
+      analyser.connect(audioCtx.destination);
+
+      dbg('playback started, sampleRate=' + sampleRate);
+
+      // Level meter
+      const dataArray = new Uint8Array(analyser.frequencyBinCount);
+      function updateMeter() {
+        analyser.getByteFrequencyData(dataArray);
+        let sum = 0;
+        for (let i = 0; i < dataArray.length; i++) sum += dataArray[i];
+        const avg = sum / dataArray.length;
+        levelBar.style.width = Math.min(100, (avg / 128) * 100) + '%';
+        requestAnimationFrame(updateMeter);
+      }
+      updateMeter();
+    }
+
+    // =====================
+    // WebSocket Connection
+    // =====================
+
+    function connect() {
+      const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      ws = new WebSocket(`${protocol}//${location.host}`);
+      ws.binaryType = 'arraybuffer';
+
+      ws.onopen = () => {
+        ws.send(JSON.stringify({ type: 'join', sessionId }));
+      };
+
+      ws.onmessage = (event) => {
+        // Binary: PCM audio samples (Int16)
+        if (event.data instanceof ArrayBuffer) {
+          if (pcmBuffer) {
+            const int16 = new Int16Array(event.data);
+            writeToBuffer(int16);
+
+            // Start playback after prebuffer
+            if (!playbackStarted && bufferedSamples >= PREBUFFER_SAMPLES) {
+              playbackStarted = true;
+              dbg('prebuffer full, starting playback');
+            }
+          }
+          return;
+        }
+
+        // Text: control message
+        const msg = JSON.parse(event.data);
+
+        if (msg.type === 'joined') {
+          statusEl.textContent = 'Waiting for audio...';
+          statusEl.classList.add('connected');
+          playBtn.classList.add('visible');
+        }
+
+        if (msg.type === 'config') {
+          sampleRate = msg.sampleRate || 48000;
+          dbg('config: sampleRate=' + sampleRate);
+        }
+
+        if (msg.type === 'listeners') {
+          listenerCount.textContent = msg.count;
+        }
+
+        if (msg.type === 'ended') {
+          statusEl.textContent = '';
+          listeningSection.classList.remove('active');
+          playBtn.classList.remove('visible');
+          endedSection.classList.add('active');
+        }
+
+        if (msg.type === 'error') {
+          statusEl.textContent = msg.message;
+          statusEl.classList.add('error');
+        }
+      };
+
+      ws.onclose = () => {
+        if (!endedSection.classList.contains('active')) {
+          statusEl.textContent = 'Connection lost.';
+          statusEl.classList.add('error');
+        }
+      };
+    }
+
+    // =====================
+    // Play Button
+    // =====================
+
+    playBtn.addEventListener('click', () => {
+      playBtn.classList.remove('visible');
+      statusEl.textContent = '';
+      listeningSection.classList.add('active');
+      startPlayback();
+    });
+
+    // --- Init ---
+    if (sessionId) {
+      connect();
+    }
+  </script>
+</body>
+</html>
