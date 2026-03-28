@@ -33,6 +33,7 @@ let socket = null;
 let bgAudio = null;
 let visualizer = null;
 let encoding = 'pcm';
+let streamChannels = 2;
 let isPlaying = false;
 
 // --- Level Meter ---
@@ -59,13 +60,13 @@ function handleAudioData(data) {
   if (encoding === 'opus' && decoder) {
     decoder.decode(data);
   } else {
-    // PCM fallback: Int16 → Float32
+    // PCM fallback: Int16 → Float32 (may be interleaved stereo)
     const int16 = new Int16Array(data);
     const float32 = new Float32Array(int16.length);
     for (let i = 0; i < int16.length; i++) {
       float32[i] = int16[i] / (int16[i] < 0 ? 0x8000 : 0x7FFF);
     }
-    playback.feedAudio(float32);
+    playback.feedAudio(float32, streamChannels);
   }
 }
 
@@ -119,6 +120,7 @@ function connectSocket() {
     },
     onConfig: (msg) => {
       encoding = msg.encoding || 'pcm';
+      streamChannels = msg.channels || 2;
 
       // Re-init decoder on reconnect if needed
       if (encoding === 'opus' && isPlaying && (!decoder || !decoder.isConfigured)) {

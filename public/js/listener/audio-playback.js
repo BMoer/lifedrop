@@ -11,13 +11,19 @@ import {
   GAIN_SMOOTHING,
   RMS_SMOOTHING,
   RMS_FLOOR,
+  COMPRESSOR_THRESHOLD,
+  COMPRESSOR_KNEE,
+  COMPRESSOR_RATIO,
+  COMPRESSOR_ATTACK,
+  COMPRESSOR_RELEASE,
 } from '../shared/constants.js';
 
 /**
  * Creates the listener audio playback pipeline:
- * AudioWorkletNode (ring buffer) → GainNode (auto-gain) → AnalyserNode → destination
+ * WorkletNode → GainNode → CompressorNode → AnalyserNode → destination
  *
- * Returns controls for feeding audio data and reading levels.
+ * The compressor prevents clipping on loud signals.
+ * Auto-gain gently normalizes volume. Compressor catches peaks.
  */
 export async function createAudioPlayback({ onPlaybackStarted, onLevel }) {
   const audioCtx = new (window.AudioContext || window.webkitAudioContext)({
@@ -42,16 +48,26 @@ export async function createAudioPlayback({ onPlaybackStarted, onLevel }) {
     },
   });
 
-  // Gain node for auto-gain normalization
+  // Gain node for gentle auto-gain normalization
   const gainNode = audioCtx.createGain();
   gainNode.gain.value = 1.0;
+
+  // Compressor/limiter — prevents clipping on loud signals
+  const compressor = audioCtx.createDynamicsCompressor();
+  compressor.threshold.value = COMPRESSOR_THRESHOLD;
+  compressor.knee.value = COMPRESSOR_KNEE;
+  compressor.ratio.value = COMPRESSOR_RATIO;
+  compressor.attack.value = COMPRESSOR_ATTACK;
+  compressor.release.value = COMPRESSOR_RELEASE;
 
   // Analyser for level meter / visualizer
   const analyser = audioCtx.createAnalyser();
   analyser.fftSize = 256;
 
+  // Chain: Worklet → Gain → Compressor → Analyser → Speakers
   workletNode.connect(gainNode);
-  gainNode.connect(analyser);
+  gainNode.connect(compressor);
+  compressor.connect(analyser);
   analyser.connect(audioCtx.destination);
 
   // Auto-gain based on RMS from worklet
@@ -65,9 +81,9 @@ export async function createAudioPlayback({ onPlaybackStarted, onLevel }) {
     }
 
     if (type === 'level') {
-      const { rms, bufferedSamples } = event.data;
+      const { rms } = event.data;
 
-      // Smooth auto-gain adjustment
+      // Smooth auto-gain — conservative to avoid fighting the compressor
       rmsSmoothed = rmsSmoothed * RMS_SMOOTHING + rms * (1 - RMS_SMOOTHING);
 
       if (rmsSmoothed > RMS_FLOOR) {
@@ -76,7 +92,7 @@ export async function createAudioPlayback({ onPlaybackStarted, onLevel }) {
         gainNode.gain.value = currentGain * GAIN_SMOOTHING + desiredGain * (1 - GAIN_SMOOTHING);
       }
 
-      onLevel({ rms, bufferedSamples });
+      onLevel({ rms });
     }
   };
 
@@ -105,6 +121,7 @@ export async function createAudioPlayback({ onPlaybackStarted, onLevel }) {
     destroy() {
       workletNode.disconnect();
       gainNode.disconnect();
+      compressor.disconnect();
       analyser.disconnect();
       audioCtx.close();
     },

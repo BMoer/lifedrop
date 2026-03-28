@@ -113,13 +113,16 @@ class ListenerProcessor extends AudioWorkletProcessor {
     }
 
     // Normal playback — read interleaved into separate output channels
+    // with soft clipping (tanh) to prevent digital distortion
     for (let i = 0; i < needed; i++) {
       for (let c = 0; c < ch && c < output.length; c++) {
-        output[c][i] = this._buffer[this._readPos + c];
+        const sample = this._buffer[this._readPos + c];
+        // Soft clip: tanh gives smooth saturation instead of hard clipping
+        output[c][i] = Math.abs(sample) > 0.9 ? Math.tanh(sample) : sample;
       }
-      // If output has more channels than buffer, fill with channel 0
       for (let c = ch; c < output.length; c++) {
-        output[c][i] = this._buffer[this._readPos];
+        const sample = this._buffer[this._readPos];
+        output[c][i] = Math.abs(sample) > 0.9 ? Math.tanh(sample) : sample;
       }
       this._readPos = (this._readPos + ch) % this._bufferSize;
     }
