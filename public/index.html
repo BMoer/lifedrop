@@ -3,6 +3,11 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#0a0a0a">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="manifest" href="/manifest.json">
+  <link rel="apple-touch-icon" href="/icons/icon-192.png">
   <title>LiveDrop</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -124,6 +129,9 @@
       <select id="deviceSelect">
         <option value="">Loading devices...</option>
       </select>
+      <label for="sessionName">Stream Name <span style="color:#555">(optional)</span></label>
+      <input type="text" id="sessionName" placeholder="e.g. my-stream" autocomplete="off" spellcheck="false"
+        style="width:100%;padding:12px 16px;background:#1a1a1a;color:#fff;border:1px solid #333;border-radius:10px;font-size:16px;font-family:inherit;margin-bottom:24px;">
       <button class="btn btn-live" id="goLiveBtn">Go Live</button>
     </div>
 
@@ -136,6 +144,8 @@
       <div class="url-box" id="shareUrl"></div>
       <button class="btn btn-copy" id="copyBtn">Copy Link</button>
 
+      <canvas id="qrCanvas" width="200" height="200" style="display:none;margin:16px auto;border-radius:10px;background:#fff;"></canvas>
+
       <div class="listener-count">
         <span id="listenerCount">0</span> listeners
       </div>
@@ -146,228 +156,11 @@
     <div class="status" id="status"></div>
   </div>
 
+  <script type="module" src="/js/sender/main.js"></script>
   <script>
-    const deviceSelect = document.getElementById('deviceSelect');
-    const goLiveBtn = document.getElementById('goLiveBtn');
-    const setupSection = document.getElementById('setupSection');
-    const liveSection = document.getElementById('liveSection');
-    const shareUrl = document.getElementById('shareUrl');
-    const copyBtn = document.getElementById('copyBtn');
-    const listenerCount = document.getElementById('listenerCount');
-    const stopBtn = document.getElementById('stopBtn');
-    const statusEl = document.getElementById('status');
-
-    let ws = null;
-    let stream = null;
-    let audioCtx = null;
-    let processorNode = null;
-
-    // --- Device enumeration ---
-
-    async function loadDevices() {
-      try {
-        const devices = await navigator.mediaDevices.enumerateDevices();
-        const audioInputs = devices.filter(d => d.kind === 'audioinput');
-
-        deviceSelect.innerHTML = '';
-        if (audioInputs.length === 0) {
-          deviceSelect.innerHTML = '<option value="">No audio inputs found</option>';
-          return;
-        }
-
-        audioInputs.forEach((device, i) => {
-          const option = document.createElement('option');
-          option.value = device.deviceId;
-          option.textContent = device.label || `Microphone ${i + 1}`;
-          deviceSelect.appendChild(option);
-        });
-      } catch (err) {
-        statusEl.textContent = `Error loading devices: ${err.message}`;
-      }
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.register('/sw.js').catch(() => {});
     }
-
-    // --- Go Live ---
-
-    goLiveBtn.addEventListener('click', async () => {
-      goLiveBtn.disabled = true;
-      statusEl.textContent = 'Requesting audio access...';
-
-      const deviceId = deviceSelect.value;
-
-      try {
-        const constraints = deviceId
-          ? { audio: { deviceId: { exact: deviceId } } }
-          : { audio: true };
-        stream = await navigator.mediaDevices.getUserMedia(constraints);
-      } catch (err) {
-        statusEl.textContent = `Microphone access denied: ${err.message}`;
-        goLiveBtn.disabled = false;
-        return;
-      }
-
-      await loadDevices();
-      statusEl.textContent = 'Connecting...';
-
-      const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-      ws = new WebSocket(`${protocol}//${location.host}`);
-
-      ws.onopen = () => {
-        ws.send(JSON.stringify({ type: 'start', role: 'sender' }));
-      };
-
-      ws.onmessage = (event) => {
-        if (typeof event.data !== 'string') return;
-        const msg = JSON.parse(event.data);
-
-        if (msg.type === 'session') {
-          startCapture(msg.sessionId);
-        }
-        if (msg.type === 'listeners') {
-          listenerCount.textContent = msg.count;
-        }
-      };
-
-      ws.onclose = () => {
-        stopStream();
-        statusEl.textContent = 'Connection lost.';
-      };
-
-      ws.onerror = () => {
-        statusEl.textContent = 'WebSocket error.';
-        goLiveBtn.disabled = false;
-      };
-    });
-
-    let encoder = null;
-    let encoderTimestamp = 0;
-    const useOpus = typeof AudioEncoder !== 'undefined';
-
-    function startCapture(sessionId) {
-      const url = `${location.origin}/s/${sessionId}`;
-      shareUrl.textContent = url;
-      setupSection.style.display = 'none';
-      liveSection.classList.add('active');
-      statusEl.textContent = '';
-
-      const encoding = useOpus ? 'opus' : 'pcm';
-      ws.send(JSON.stringify({ type: 'config', sampleRate: 48000, encoding }));
-
-      audioCtx = new AudioContext({ sampleRate: 48000 });
-      const source = audioCtx.createMediaStreamSource(stream);
-
-      if (useOpus) {
-        // Opus encoding via WebCodecs — ~16KB/s instead of ~94KB/s
-        encoder = new AudioEncoder({
-          output: (chunk) => {
-            const buf = new ArrayBuffer(chunk.byteLength);
-            chunk.copyTo(buf);
-            if (ws && ws.readyState === WebSocket.OPEN) {
-              ws.send(buf);
-            }
-          },
-          error: (err) => console.error('AudioEncoder error:', err)
-        });
-
-        encoder.configure({
-          codec: 'opus',
-          sampleRate: 48000,
-          numberOfChannels: 1,
-          bitrate: 128000,
-        });
-
-        encoderTimestamp = 0;
-      }
-
-      // 2048 samples = ~43ms at 48kHz — low latency
-      processorNode = audioCtx.createScriptProcessor(2048, 1, 1);
-
-      processorNode.onaudioprocess = (e) => {
-        if (!ws || ws.readyState !== WebSocket.OPEN) return;
-        const float32 = e.inputBuffer.getChannelData(0);
-
-        if (useOpus && encoder && encoder.state === 'configured') {
-          const audioData = new AudioData({
-            format: 'f32-planar',
-            sampleRate: 48000,
-            numberOfFrames: float32.length,
-            numberOfChannels: 1,
-            timestamp: encoderTimestamp,
-            data: float32,
-          });
-          encoder.encode(audioData);
-          audioData.close();
-          encoderTimestamp += (float32.length / 48000) * 1_000_000;
-        } else {
-          // Fallback: raw Int16 PCM
-          const int16 = new Int16Array(float32.length);
-          for (let i = 0; i < float32.length; i++) {
-            const s = Math.max(-1, Math.min(1, float32[i]));
-            int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-          }
-          ws.send(int16.buffer);
-        }
-      };
-
-      source.connect(processorNode);
-      processorNode.connect(audioCtx.destination);
-    }
-
-    // --- Copy link ---
-
-    copyBtn.addEventListener('click', async () => {
-      const url = shareUrl.textContent;
-      try {
-        await navigator.clipboard.writeText(url);
-        copyBtn.textContent = 'Copied!';
-        setTimeout(() => { copyBtn.textContent = 'Copy Link'; }, 2000);
-      } catch {
-        const textarea = document.createElement('textarea');
-        textarea.value = url;
-        document.body.appendChild(textarea);
-        textarea.select();
-        document.execCommand('copy');
-        document.body.removeChild(textarea);
-        copyBtn.textContent = 'Copied!';
-        setTimeout(() => { copyBtn.textContent = 'Copy Link'; }, 2000);
-      }
-    });
-
-    // --- Stop ---
-
-    stopBtn.addEventListener('click', () => {
-      stopStream();
-      statusEl.textContent = 'Stream stopped.';
-    });
-
-    function stopStream() {
-      if (encoder) {
-        encoder.close();
-        encoder = null;
-      }
-      if (processorNode) {
-        processorNode.disconnect();
-        processorNode = null;
-      }
-      if (audioCtx) {
-        audioCtx.close();
-        audioCtx = null;
-      }
-      if (stream) {
-        stream.getTracks().forEach(t => t.stop());
-        stream = null;
-      }
-      if (ws) {
-        ws.close();
-        ws = null;
-      }
-      setupSection.style.display = '';
-      liveSection.classList.remove('active');
-      goLiveBtn.disabled = false;
-    }
-
-    // --- Init ---
-    loadDevices();
-    navigator.mediaDevices.addEventListener('devicechange', loadDevices);
   </script>
 </body>
 </html>

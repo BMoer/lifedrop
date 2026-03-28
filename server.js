@@ -18,6 +18,20 @@ function generateSessionId() {
   return id;
 }
 
+const SESSION_NAME_PATTERN = /^[a-z0-9][a-z0-9-]{1,28}[a-z0-9]$/;
+
+function validateSessionName(name) {
+  if (!name) return { valid: true, name: null };
+  const normalized = name.toLowerCase().trim();
+  if (!SESSION_NAME_PATTERN.test(normalized)) {
+    return { valid: false, error: 'Name must be 3-30 chars, lowercase alphanumeric and hyphens only' };
+  }
+  if (sessions.has(normalized)) {
+    return { valid: false, error: 'Name already in use' };
+  }
+  return { valid: true, name: normalized };
+}
+
 function broadcastListenerCount(session) {
   const msg = JSON.stringify({ type: 'listeners', count: session.listeners.size });
   if (session.sender && session.sender.readyState === WebSocket.OPEN) {
@@ -115,8 +129,15 @@ wss.on('connection', (ws) => {
     }
 
     if (msg.type === 'start' && msg.role === 'sender' && !role) {
+      // Support custom session names
+      const nameResult = validateSessionName(msg.sessionName);
+      if (!nameResult.valid) {
+        ws.send(JSON.stringify({ type: 'error', message: nameResult.error }));
+        return;
+      }
+
       role = 'sender';
-      sessionId = generateSessionId();
+      sessionId = nameResult.name || generateSessionId();
       sessions.set(sessionId, { sender: ws, listeners: new Set() });
       ws.send(JSON.stringify({ type: 'session', sessionId }));
       console.log(`Session ${sessionId} created`);
